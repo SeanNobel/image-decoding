@@ -1,0 +1,17 @@
+numpy
+torch
+transformers
+einops
+pillow
+mne
+scikit-learn
+
+git+https://github.com/openai/CLIP.git
+
+wandb
+hydra-core
+omegaconf
+
+natsort
+termcolor
+tqdm

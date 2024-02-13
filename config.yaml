@@ -1,0 +1,10 @@
+# Directories
+thingsmeg_dir: ./things-meg/
+meg_dir: ${thingsmeg_dir}derivatives/preprocessed/
+preprocessed_dir: ./preprocessed/
+
+# Preprocessing
+skip_meg: False
+skip_images: False
+
+vision_model: ViT-L/14
