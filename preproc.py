@@ -3,6 +3,7 @@ Here I use the preprocessed data in Hebart et al., 2023. It looks that scaling a
 is performed but clamping is not, which is different from the Meta paper. I resample the data from 200Hz
 to 120Hz as in the Meta paper.
 """
+
 import os, sys
 import numpy as np
 import mne
@@ -36,7 +37,6 @@ def scale_clamp(
         X: ( channels, timesteps )
     """
     X = RobustScaler().fit_transform(X.T if scale_transposed else X)
-    # NOTE: must be samples x features
 
     if scale_transposed:
         X = X.T
@@ -49,9 +49,7 @@ def scale_clamp(
 
 @torch.no_grad()
 def encode_images(y_list: List[str], preprocess, clip_model, device) -> torch.Tensor:
-    """Encodes images with either OpenAI or Huggingface pretrained CLIP.
-    https://huggingface.co/openai/clip-vit-large-patch14
-    """
+    """Encodes images with either OpenAI or Huggingface pretrained CLIP. https://huggingface.co/openai/clip-vit-large-patch14"""
     if isinstance(clip_model, CLIPVisionModel):
         last_hidden_states = []
 
@@ -90,7 +88,7 @@ def run(args: DictConfig) -> None:
         for i in range(4)
     ]
 
-    save_dir = args.preprocessed_dir
+    save_dir = os.path.join(args.save_dir, "preproc")
     os.makedirs(save_dir, exist_ok=True)
 
     for subject_id, (meg_path, sample_attrs_path) in enumerate(zip(meg_paths, sample_attrs_paths)):  # fmt: skip
@@ -106,11 +104,11 @@ def run(args: DictConfig) -> None:
         #        MEG
         # -----------------
         if not args.skip_meg:
-            cprint("> Loading epochs...", "cyan")
+
             epochs = mne.read_epochs(meg_path)
 
-            cprint(f"> Resampling epochs to {args.brain_resample_sfreq}Hz...", "cyan")
-            epochs.resample(args.brain_resample_sfreq, n_jobs=8)
+            cprint(f"> Resampling epochs to {args.brain_sfreq}Hz...", "cyan")
+            epochs.resample(args.brain_sfreq, n_jobs=8)
 
             cprint(f"> Scale and clamping epochs to ±{args.clamp_lim}...", "cyan")
             epochs.apply_function(
@@ -133,14 +131,14 @@ def run(args: DictConfig) -> None:
         # -----------------
         if not args.skip_images:
             if args.vision_model.startswith("ViT-"):
-                clip_model, preprocess = clip.load(args.vision.pretrained_model)
+                clip_model, preprocess = clip.load(args.vision_model)
                 clip_model = clip_model.eval().to(device)
 
             elif args.vision_model.startswith("openai/"):
-                clip_model = CLIPVisionModel.from_pretrained(args.vision.pretrained_model).to(device)  # fmt: skip
-                preprocess = AutoProcessor.from_pretrained(args.vision.pretrained_model)
+                clip_model = CLIPVisionModel.from_pretrained(args.vision_model).to(device)  # fmt: skip
+                preprocess = AutoProcessor.from_pretrained(args.vision_model)
             else:
-                raise ValueError(f"Unknown pretrained CLIP type: {args.vision.pretrained_model}") # fmt: skip
+                raise ValueError(f"Unknown pretrained CLIP type: {args.vision_model}")  # fmt: skip
 
             y_list = []
             for path in sample_attrs[:, 8]:

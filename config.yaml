@@ -1,10 +1,31 @@
 # Directories
 thingsmeg_dir: ./things-meg/
 meg_dir: ${thingsmeg_dir}derivatives/preprocessed/
-preprocessed_dir: ./preprocessed/
+
+things_dir: ./things/
+images_dir: ${things_dir}osfstorage/THINGS/Images/
+metadata_dir: ${things_dir}osfstorage/THINGS/Metadata/
+
+save_dir: ./data
 
 # Preprocessing
 skip_meg: False
-skip_images: False
+skip_images: True
 
 vision_model: ViT-L/14
+
+brain_sfreq: 120
+clamp_lim: 5.0
+
+# Training
+epochs: 1000
+lr: 3.0e-4
+lr_scheduler: null
+lr_multistep_mlstns: [0.4, 0.6, 0.8, 0.9]
+lr_step_gamma: 0.5
+acc_topks: [1, 5]
+
+lambd: 0.75 # Weighting of CLIP and MSE loss
+
+cuda_id: 0
+seed: 1234
