@@ -32,8 +32,8 @@ def calc_similarity(
         for i in range(batch_size):
             similarity[i] = Z[i] @ Y.T
 
-        if pbar:
-            pbar.update(1)
+            if pbar:
+                pbar.update(1)
     else:
         Z = rearrange(Z, "b f -> b 1 f")
         Y = rearrange(Y, "b f -> 1 b f")
