@@ -9,30 +9,25 @@ from tqdm import tqdm
 from typing import Tuple, List
 import gc
 
-from nd.utils.eval_utils import get_run_dir
+# from nd.utils.eval_utils import get_run_dir
 
 
 class ThingsMEGCLIPDataset(torch.utils.data.Dataset):
     def __init__(self, args) -> None:
         super().__init__()
 
+        self.things_dir = args.things_dir
+        self.preproc_dir = os.path.join(args.save_dir, "preproc")
+
         self.num_subjects = 4
         self.large_test_set = args.large_test_set
-
-        # NOTE: Some categories
-        high_categories = np.loadtxt(
-            os.path.join(
-                args.things_dir, "27 higher-level categories/category_mat_manual.tsv"
-            ),
-            dtype=int,
-            delimiter="\t",
-            skiprows=1,
-        )  # ( 1854, 27 )
-
-        preproc_dir = os.path.join(args.preprocessed_data_dir, args.preproc_name)
+        self.num_clip_tokens = args.num_clip_tokens
+        self.align_token = args.align_token
 
         sample_attrs_paths = [
-            os.path.join(args.thingsmeg_dir, f"sourcedata/sample_attributes_P{i+1}.csv")
+            os.path.join(
+                args.thingsmeg_root, f"sourcedata/sample_attributes_P{i+1}.csv"
+            )
             for i in range(self.num_subjects)
         ]
 
@@ -43,35 +38,20 @@ class ThingsMEGCLIPDataset(torch.utils.data.Dataset):
         y_idxs_list = []
         train_idxs_list = []
         test_idxs_list = []
+
         for subject_id, sample_attrs_path in enumerate(sample_attrs_paths):
             # MEG
             X_list.append(
-                torch.load(os.path.join(preproc_dir, f"MEG_P{subject_id+1}.pt"))
+                torch.load(os.path.join(self.preproc_dir, f"MEG_P{subject_id+1}.pt"))
             )
             # ( 27048, 271, segment_len )
 
-            # Images (or Texts)
-            if args.align_to == "vision":
-                Y = torch.load(os.path.join(preproc_dir, f"Images_P{subject_id+1}.pt"), map_location="cpu")  # fmt: skip
-            elif args.align_to == "text":
-                Y = torch.load(os.path.join(preproc_dir, f"Texts_P{subject_id+1}.pt"), map_location="cpu")  # fmt: skip
-            else:
-                raise ValueError(f"Invalid align_to: {args.align_to}")
-
-            if Y.ndim == 2:
-                assert args.num_clip_tokens == 1, "num_clip_tokens > 1 is specified, but the embessings don't have temporal dimension."  # fmt: skip
-                assert not args.align_tokens == "all", "align_tokens is specified as 'all', but the embessings don't have temporal dimension."  # fmt: skip
-
-                Y = Y.unsqueeze(1)
-            else:
-                if args.align_tokens == "mean":
-                    assert args.num_clip_tokens == 1
-                    Y = Y.mean(dim=1, keepdim=True)
-                elif args.align_tokens == "cls":
-                    assert args.num_clip_tokens == 1
-                    Y = Y[:, :1]
-                else:
-                    assert args.align_tokens == "all"
+            # Images
+            Y = torch.load(
+                os.path.join(self.preproc_dir, f"Images_P{subject_id+1}.pt"),
+                map_location="cpu",
+            )
+            Y = self._extract_token(Y)
 
             Y_list.append(Y.clone())
             del Y; gc.collect()  # fmt: skip
@@ -89,7 +69,7 @@ class ThingsMEGCLIPDataset(torch.utils.data.Dataset):
             )
 
             # Split
-            train_idxs, test_idxs = self.make_split(
+            train_idxs, test_idxs = self._make_split(
                 sample_attrs, large_test_set=self.large_test_set
             )
             idx_offset = len(sample_attrs) * subject_id
@@ -104,7 +84,7 @@ class ThingsMEGCLIPDataset(torch.utils.data.Dataset):
         assert torch.equal(self.categories.unique(), torch.arange(self.categories.max() + 1))  # fmt: skip
         self.num_categories = len(self.categories.unique())
 
-        self.high_categories = self.to_high_categories(self.categories, high_categories)
+        self.high_categories = self._to_high_categories(self.categories)
         self.num_high_categories = self.high_categories.max() + 1
 
         self.y_idxs = torch.cat(y_idxs_list) - 1
@@ -114,8 +94,6 @@ class ThingsMEGCLIPDataset(torch.utils.data.Dataset):
         self.test_idxs = torch.cat(test_idxs_list, dim=0)
 
         cprint(f"X: {self.X.shape} | Y: {self.Y.shape} | subject_idxs: {self.subject_idxs.shape} | train_idxs: {self.train_idxs.shape} | test_idxs: {self.test_idxs.shape}", "cyan")  # fmt: skip
-
-        # self.subject_names = [f"s0{i+1}" for i in range(4)]
 
         if args.chance:
             self.X = self.X[torch.randperm(len(self.X))]
@@ -130,7 +108,7 @@ class ThingsMEGCLIPDataset(torch.utils.data.Dataset):
         return self.X[i], self.Y[i], self.subject_idxs[i], self.y_idxs[i], self.categories[i], self.high_categories[i]  # fmt: skip
 
     @staticmethod
-    def make_split(
+    def _make_split(
         sample_attrs: np.ndarray,
         large_test_set: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -177,9 +155,25 @@ class ThingsMEGCLIPDataset(torch.utils.data.Dataset):
 
         return torch.from_numpy(train_trial_idxs), torch.from_numpy(test_trial_idxs)
 
-    def to_high_categories(
-        self, categories: torch.Tensor, high_categories: np.ndarray
-    ) -> torch.Tensor:
+    def _extract_token(self, Y: torch.Tensor) -> torch.Tensor:
+        if Y.ndim == 2:
+            assert self.num_clip_tokens == 1, "num_clip_tokens > 1 is specified, but the embessings don't have temporal dimension."  # fmt: skip
+            assert not self.align_token == "all", "align_token is specified as 'all', but the embessings don't have temporal dimension."  # fmt: skip
+
+            Y = Y.unsqueeze(1)
+        else:
+            if self.align_token == "mean":
+                assert self.num_clip_tokens == 1
+                Y = Y.mean(dim=1, keepdim=True)
+            elif self.align_token == "cls":
+                assert self.num_clip_tokens == 1
+                Y = Y[:, :1]
+            else:
+                assert self.align_token == "all"
+
+        return Y
+
+    def _to_high_categories(self, categories: torch.Tensor) -> torch.Tensor:
         """_summary_
         Args:
             categories ( 27048 * 4, ): Elements are integers of [0, 1854].
@@ -188,6 +182,15 @@ class ThingsMEGCLIPDataset(torch.utils.data.Dataset):
         Returns:
             high_categories ( 27048 * 4, ): Elements are integers of [0, 27].
         """
+        high_categories = np.loadtxt(
+            os.path.join(
+                self.things_dir, "27 higher-level categories/category_mat_manual.tsv"
+            ),
+            dtype=int,
+            delimiter="\t",
+            skiprows=1,
+        )  # ( 1854, 27 )
+
         # Set categories that are not in any of higher categories as "uncategorized".
         unc = np.where(high_categories.sum(axis=1) == 0)[0]
         # This takes the first higher-category for categories that are in multiple higher-categories.
@@ -200,80 +203,80 @@ class ThingsMEGCLIPDataset(torch.utils.data.Dataset):
         return torch.from_numpy(high_categories)[categories]
 
 
-class ThingsMEGDecoderDataset(torch.utils.data.Dataset):
-    def __init__(self, args) -> None:
-        super().__init__()
+# class ThingsMEGDecoderDataset(torch.utils.data.Dataset):
+#     def __init__(self, args) -> None:
+#         super().__init__()
 
-        self.image_size = args.image_sizes[-1]
+#         self.image_size = args.image_sizes[-1]
 
-        preproc_dir = os.path.join(args.preprocessed_data_dir, args.preproc_name)
-        embeds_dir = os.path.join(args.clip_embeds_dir, *get_run_dir(args).split("/")[2:])  # fmt: skip
+#         preproc_dir = os.path.join(args.preprocessed_data_dir, args.preproc_name)
+#         embeds_dir = os.path.join(args.clip_embeds_dir, *get_run_dir(args).split("/")[2:])  # fmt: skip
 
-        sample_attrs_paths = [
-            os.path.join(args.thingsmeg_dir, f"sourcedata/sample_attributes_P{i+1}.csv")
-            for i in range(4)
-        ]
+#         sample_attrs_paths = [
+#             os.path.join(args.thingsmeg_dir, f"sourcedata/sample_attributes_P{i+1}.csv")
+#             for i in range(4)
+#         ]
 
-        Y_path_list = []
-        train_idxs_list = []
-        test_idxs_list = []
-        for subject_id, sample_attrs_path in enumerate(sample_attrs_paths):
-            # Image paths
-            Y_path_list.append(
-                np.loadtxt(
-                    os.path.join(preproc_dir, f"Images_P{subject_id+1}.txt"), dtype=str
-                )
-            )
+#         Y_path_list = []
+#         train_idxs_list = []
+#         test_idxs_list = []
+#         for subject_id, sample_attrs_path in enumerate(sample_attrs_paths):
+#             # Image paths
+#             Y_path_list.append(
+#                 np.loadtxt(
+#                     os.path.join(preproc_dir, f"Images_P{subject_id+1}.txt"), dtype=str
+#                 )
+#             )
 
-            sample_attrs = np.loadtxt(
-                sample_attrs_path, dtype=str, delimiter=",", skiprows=1
-            )
-            train_idxs, test_idxs = ThingsMEGCLIPDataset.make_split(
-                sample_attrs, large_test_set=args.large_test_set
-            )
-            idx_offset = len(sample_attrs) * subject_id
-            train_idxs_list.append(train_idxs + idx_offset)
-            test_idxs_list.append(test_idxs + idx_offset)
+#             sample_attrs = np.loadtxt(
+#                 sample_attrs_path, dtype=str, delimiter=",", skiprows=1
+#             )
+#             train_idxs, test_idxs = ThingsMEGCLIPDataset.make_split(
+#                 sample_attrs, large_test_set=args.large_test_set
+#             )
+#             idx_offset = len(sample_attrs) * subject_id
+#             train_idxs_list.append(train_idxs + idx_offset)
+#             test_idxs_list.append(test_idxs + idx_offset)
 
-        self.Y_path = np.concatenate(Y_path_list)  # ( 27048, )
+#         self.Y_path = np.concatenate(Y_path_list)  # ( 27048, )
 
-        self.train_idxs = torch.cat(train_idxs_list, dim=0)
-        self.test_idxs = torch.cat(test_idxs_list, dim=0)
+#         self.train_idxs = torch.cat(train_idxs_list, dim=0)
+#         self.test_idxs = torch.cat(test_idxs_list, dim=0)
 
-        # MEG embeddings
-        Z = torch.load(os.path.join(embeds_dir, "brain_mse_embeds.pt"))
-        Y_embeds = torch.load(os.path.join(embeds_dir, "vision_embeds.pt"))
-        self.Z = self._load_postproc_embeds(Z, Y_embeds)
+#         # MEG embeddings
+#         Z = torch.load(os.path.join(embeds_dir, "brain_mse_embeds.pt"))
+#         Y_embeds = torch.load(os.path.join(embeds_dir, "vision_embeds.pt"))
+#         self.Z = self._load_postproc_embeds(Z, Y_embeds)
 
-        del Z, Y_embeds, Y_path_list, train_idxs_list, test_idxs_list
-        gc.collect()
+#         del Z, Y_embeds, Y_path_list, train_idxs_list, test_idxs_list
+#         gc.collect()
 
-    def __len__(self) -> int:
-        return len(self.Z)
+#     def __len__(self) -> int:
+#         return len(self.Z)
 
-    def __getitem__(self, i):
-        # _Y = cv2.resize(cv2.imread(self.Y_path[i]), (self.image_size, self.image_size))
-        # _Y = torch.from_numpy(_Y).to(torch.float32).permute(2, 0, 1) / 255.0
+#     def __getitem__(self, i):
+#         # _Y = cv2.resize(cv2.imread(self.Y_path[i]), (self.image_size, self.image_size))
+#         # _Y = torch.from_numpy(_Y).to(torch.float32).permute(2, 0, 1) / 255.0
 
-        Y = Image.open(self.Y_path[i]).resize(
-            (self.image_size, self.image_size), Image.BILINEAR
-        )
+#         Y = Image.open(self.Y_path[i]).resize(
+#             (self.image_size, self.image_size), Image.BILINEAR
+#         )
 
-        return self.Z[i], to_tensor(Y)
+#         return self.Z[i], to_tensor(Y)
 
-    def _load_postproc_embeds(self, Z, Y_embeds) -> torch.Tensor:
-        """_summary_
-        Args:
-            Z ( 108192, F ): _description_
-            Y_embeds ( 108192, F ): _description_
-        Returns:
-            Z ( 108192, F ): z-score normalized and inverse z-score normalized Z.
-        """
-        Y_embeds = Y_embeds[self.train_idxs]
-        mean, std = Y_embeds.mean(dim=0), Y_embeds.std(dim=0)
+#     def _load_postproc_embeds(self, Z, Y_embeds) -> torch.Tensor:
+#         """_summary_
+#         Args:
+#             Z ( 108192, F ): _description_
+#             Y_embeds ( 108192, F ): _description_
+#         Returns:
+#             Z ( 108192, F ): z-score normalized and inverse z-score normalized Z.
+#         """
+#         Y_embeds = Y_embeds[self.train_idxs]
+#         mean, std = Y_embeds.mean(dim=0), Y_embeds.std(dim=0)
 
-        # z-score normalize each feature across predictions
-        Z = (Z - Z.mean(dim=0)) / Z.std(dim=0)
+#         # z-score normalize each feature across predictions
+#         Z = (Z - Z.mean(dim=0)) / Z.std(dim=0)
 
-        # Inverse z-score normalize each feature across predictions
-        return Z * std + mean
+#         # Inverse z-score normalize each feature across predictions
+#         return Z * std + mean

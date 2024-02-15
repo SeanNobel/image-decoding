@@ -1,12 +1,15 @@
-# Directories
-thingsmeg_dir: ./things-meg/
-meg_dir: ${thingsmeg_dir}derivatives/preprocessed/
+# Paths
+thingsmeg_root: ./things-meg/
+meg_dir: ${thingsmeg_root}derivatives/preprocessed/
 
-things_dir: ./things/
-images_dir: ${things_dir}osfstorage/THINGS/Images/
-metadata_dir: ${things_dir}osfstorage/THINGS/Metadata/
+things_root: ./things/
+things_dir: ${things_root}osfstorage/THINGS/
+images_dir: ${things_dir}Images/
+metadata_dir: ${things_dir}Metadata/
 
 save_dir: ./data
+
+montage_path: ./assets/thingsmeg_montage.npy
 
 # Preprocessing
 skip_meg: False
@@ -15,17 +18,72 @@ skip_images: True
 vision_model: ViT-L/14
 
 brain_sfreq: 120
+# There are only 169 time points after resampling Hebart preprocessed data to 120 Hz, so it seems roughly 1.41 seconds.
+# This is a bit smaller than 181 time points which they have in the Meta paper, but they also say that 1.25 seconds after the onset is not important for retrieval.
+seq_len: 1.41
+# One channel seems to be removed by Hebart's preprocessing (the Meta paper has 272 channels).
+num_channels: 271
 clamp_lim: 5.0
+
+
+# Model
+F: 768
+D1: 270
+D2: 320
+D3: 1024
+K: 32
+spatial_attention: True
+ignore_subjects: False
+num_blocks: 2
+conv_block_ksize: 3
+temporal_agg: affine
+p_drop: 0.1
+d_drop: 0.1
+final_ksize: 1
+final_stride: 1
 
 # Training
 epochs: 1000
+batch_size: 128
 lr: 3.0e-4
 lr_scheduler: null
 lr_multistep_mlstns: [0.4, 0.6, 0.8, 0.9]
 lr_step_gamma: 0.5
 acc_topks: [1, 5]
 
+reduction: mean
+clip_temp_init: 5.0 # This value is exponentiated in the loss.
+clip_temp_learn: True
+clip_temp_min: null
+clip_temp_max: null
+
+num_clip_tokens: 1 # Must be 1 to reproduce the paper.
+align_token: mean # mean / cls (/ all)
+
 lambd: 0.75 # Weighting of CLIP and MSE loss
 
+large_test_set: True
+
+patience: 40
+
+chance: False # True for checking the chance level.
+
+plot_latents: False
+
 cuda_id: 0
+num_workers: 4
 seed: 1234
+
+wandb:
+  project: image-decoding
+  name: init
+  mode: online
+  sweep: False
+  sweep_count: 1
+  sweep_config:
+    name: init
+    method: grid
+    metric:
+      name: test_top5_acc
+      goal: maximize
+    parameters:

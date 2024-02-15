@@ -84,7 +84,7 @@ def run(args: DictConfig) -> None:
         os.path.join(args.meg_dir, f"preprocessed_P{i+1}-epo.fif") for i in range(4)
     ]
     sample_attrs_paths = [
-        os.path.join(args.thingsmeg_dir, f"sourcedata/sample_attributes_P{i+1}.csv")
+        os.path.join(args.thingsmeg_root, f"sourcedata/sample_attributes_P{i+1}.csv")
         for i in range(4)
     ]
 

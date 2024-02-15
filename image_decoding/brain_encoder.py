@@ -11,23 +11,22 @@ from termcolor import cprint
 
 
 class SpatialAttention(nn.Module):
-    def __init__(self, args, loc: torch.Tensor, flat: bool = True):
+    def __init__(
+        self, loc: torch.Tensor, D1: int, K: int, d_drop: float, flat: bool = True
+    ):
         super().__init__()
 
-        self.D1 = args.D1
-        self.K = args.K
         self.flat = flat
-        x, y = loc.T
 
         # TODO: Check if those two are identical.
-
-        if flat:  # Implementation version 1
-            self.z_re = nn.Parameter(torch.Tensor(self.D1, self.K, self.K))
-            self.z_im = nn.Parameter(torch.Tensor(self.D1, self.K, self.K))
+        x, y = loc.T
+        if self.flat:  # Implementation version 1
+            self.z_re = nn.Parameter(torch.Tensor(D1, K, K))
+            self.z_im = nn.Parameter(torch.Tensor(D1, K, K))
             nn.init.kaiming_uniform_(self.z_re, a=np.sqrt(5))
             nn.init.kaiming_uniform_(self.z_im, a=np.sqrt(5))
 
-            k_arange = torch.arange(self.K)
+            k_arange = torch.arange(K)
             rad1 = torch.einsum("k,c->kc", k_arange, x)
             rad2 = torch.einsum("l,c->lc", k_arange, y)
             rad = rad1.unsqueeze(1) + rad2.unsqueeze(0)
@@ -36,14 +35,12 @@ class SpatialAttention(nn.Module):
 
         else:  # Implementation version 2
             # make a complex-valued parameter, reshape k,l into one dimension
-            self.z = nn.Parameter(
-                torch.rand(size=(self.D1, self.K**2), dtype=torch.cfloat)
-            )
+            self.z = nn.Parameter(torch.rand(size=(D1, K**2), dtype=torch.cfloat))
 
             # vectorize of k's and l's
             a = []
-            for k in range(self.K):
-                for l in range(self.K):
+            for k in range(K):
+                for l in range(K):
                     a.append((k, l))
             a = torch.tensor(a)
             k, l = a[:, 0], a[:, 1]
@@ -52,9 +49,9 @@ class SpatialAttention(nn.Module):
             self.register_buffer("cos", torch.cos(phi))
             self.register_buffer("sin", torch.sin(phi))
 
-        self.spatial_dropout = SpatialDropout(loc, args.d_drop)
+        self.spatial_dropout = SpatialDropout(loc, d_drop)
 
-    def forward(self, X):
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
         """_summary_
 
         Args:
@@ -106,30 +103,37 @@ class SpatialDropout(nn.Module):
 
 
 class SubjectBlock(nn.Module):
-    def __init__(self, args, num_subjects: int, loc: np.ndarray):
+    def __init__(
+        self,
+        num_subjects: int,
+        loc: np.ndarray,
+        D1: int,
+        K: int,
+        d_drop: float,
+        num_channels: int,
+        spatial_attention: bool = True,
+    ):
         super().__init__()
 
         self.num_subjects = num_subjects
-        self.D1 = args.D1
-        self.K = args.K
 
-        if args.spatial_attention:
-            self.spatial_attention = SpatialAttention(args, loc)
+        if spatial_attention:
+            self.spatial_attention = SpatialAttention(loc, D1, K, d_drop)
         else:
             cprint("Not using spatial attention.", "yellow")
             self.spatial_attention = None
 
         self.conv = nn.Conv1d(
-            in_channels=self.D1 if args.spatial_attention else args.num_channels,
-            out_channels=self.D1,
+            in_channels=D1 if spatial_attention else num_channels,
+            out_channels=D1,
             kernel_size=1,
             stride=1,
         )
         self.subject_layer = nn.ModuleList(
             [
                 nn.Conv1d(
-                    in_channels=self.D1,
-                    out_channels=self.D1,
+                    in_channels=D1,
+                    out_channels=D1,
                     kernel_size=1,
                     stride=1,
                     bias=False,
@@ -171,39 +175,37 @@ class ConvBlock(nn.Module):
         D1: int,
         D2: int,
         ksize: int = 3,
-        drop_mode: str = "dropout",
         p_drop: float = 0.1,
     ) -> None:
         super().__init__()
 
         self.k = k
-        self.D2 = D2
-        self.in_channels = D1 if k == 0 else D2
+        in_channels = D1 if k == 0 else D2
 
         self.conv0 = nn.Conv1d(
-            in_channels=self.in_channels,
-            out_channels=self.D2,
+            in_channels=in_channels,
+            out_channels=D2,
             kernel_size=ksize,
             padding="same",
-            dilation=2 ** ((2 * k) % 5),
+            dilation=2 ** ((2 * self.k) % 5),
         )
-        self.batchnorm0 = nn.BatchNorm1d(num_features=self.D2)
+        self.batchnorm0 = nn.BatchNorm1d(num_features=D2)
         self.conv1 = nn.Conv1d(
-            in_channels=self.D2,
-            out_channels=self.D2,
+            in_channels=D2,
+            out_channels=D2,
             kernel_size=ksize,
             padding="same",
-            dilation=2 ** ((2 * k + 1) % 5),
+            dilation=2 ** ((2 * self.k + 1) % 5),
         )
-        self.batchnorm1 = nn.BatchNorm1d(num_features=self.D2)
+        self.batchnorm1 = nn.BatchNorm1d(num_features=D2)
         self.conv2 = nn.Conv1d(
-            in_channels=self.D2,
-            out_channels=2 * self.D2,
+            in_channels=D2,
+            out_channels=2 * D2,
             kernel_size=ksize,
             padding="same",
             dilation=2,  # NOTE: The text doesn't say this, but the picture shows dilation=2
         )
-        self.dropout = get_dropout(drop_mode, p_drop)
+        self.dropout = nn.Dropout(p=p_drop)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         if self.k == 0:
@@ -225,15 +227,12 @@ class ConvBlock(nn.Module):
 class TemporalAggregation(nn.Module):
     def __init__(
         self,
-        args,
         temporal_dim: int,
-        embed_dim: Optional[int] = None,
+        embed_dim: int,
+        temporal_agg: str = "affine",
         multiplier: int = 1,
     ) -> None:
         super().__init__()
-
-        if embed_dim is None:
-            embed_dim = args.D3
 
         """Modified from: https://ai.meta.com/static-resource/image-decoding"""
         # self.layers = nn.Sequential()
@@ -241,9 +240,9 @@ class TemporalAggregation(nn.Module):
         # NOTE: conv_final corresponds to linear projection in the paper as long as the kernel size and stride are 1
         # self.layers.add_module("linear_projection",nn.Conv1d(in_channels=embed_dim, out_channels=embed_dim * expand * multiplier, kernel_size=1))
 
-        if args.temporal_aggregation == "affine":
+        if temporal_agg == "affine":
             self.layers = nn.Linear(temporal_dim, multiplier)
-        elif args.temporal_aggregation == "pool":
+        elif temporal_agg == "pool":
             self.layers = nn.AdaptiveAvgPool1d(1)
         else:
             raise NotImplementedError()
@@ -256,65 +255,37 @@ class TemporalAggregation(nn.Module):
 
 
 class BrainEncoder(nn.Module):
-    def __init__(
-        self, args, subjects: Union[int, List[str]], unknown_subject: bool = False
-    ) -> None:
+    def __init__(self, args, subjects: Union[int, List[str]]) -> None:
         super().__init__()
 
-        # Parameters
-        self.vq = args.vq
-        self.ignore_subjects = args.ignore_subjects or args.dann
-        self.unknown_subject = unknown_subject
-
-        D1, D2, D3, F = args.D1, args.D2, args.D3, args.F
-        init_temporal_dim = int(args.seq_len * args.brain_resample_sfreq)
+        D1, D2, D3, K, F = args.D1, args.D2, args.D3, args.K, args.F
+        temporal_dim = int(args.seq_len * args.brain_sfreq)
         num_clip_tokens = args.num_clip_tokens
-        num_blocks = args.num_blocks
-        num_subjects = subjects if isinstance(subjects, int) else len(subjects)
-        layout = eval(args.layout)
-        spatial_attention = args.spatial_attention
-        pos_enc = args.pos_enc
-        blocks = args.blocks
-        conv_block_ksize = args.ksizes.conv_block
-        downsample = args.downsample
-        temporal_agg = args.temporal_aggregation
-        transformer_heads = args.transformer_heads
-        p_drop = args.p_drop
-        drop_mode = args.drop_mode
-        final_ksize = args.final_ksize
-        final_stride = args.final_stride
-        vq_aggregated = args.vq_aggregated
-        dann = args.dann
-        dann_scale = args.dann_scale
+        num_subjects: int = subjects if isinstance(subjects, int) else len(subjects)
+        num_channels: int = args.num_channels
+        spatial_attention: bool = args.spatial_attention
+        num_blocks: int = args.num_blocks
+        conv_block_ksize: int = args.conv_block_ksize
+        temporal_agg: str = args.temporal_agg
+        p_drop: float = args.p_drop
+        d_drop: float = args.d_drop
+        final_ksize: int = args.final_ksize
+        final_stride: int = args.final_stride
 
-        if isinstance(blocks, str):
-            blocks = [blocks] * num_blocks
-        else:
-            if len(blocks) != num_blocks:
-                num_blocks = len(blocks)
-                cprint(f"Updating num_blocks to {num_blocks}.", "yellow")
+        self.ignore_subjects = args.ignore_subjects
 
-        if isinstance(downsample, bool):
-            downsample = [downsample] * num_blocks
-        else:
-            assert len(downsample) == num_blocks, "downsample and num_blocks should have the same length."  # fmt: skip
+        loc = self._ch_locations_2d(args.montage_path)
 
+        num_subjects = num_subjects if not self.ignore_subjects else 1
         self.subject_block = SubjectBlock(
-            args, num_subjects if not self.ignore_subjects else 1, self.ch_locations_2d(args)
+            num_subjects, loc, D1, K, d_drop, num_channels, spatial_attention
         )
 
-        block_args = {"D1": D1, "D2": D2, "p_drop": p_drop}
         self.blocks = nn.Sequential()
 
-        for k, block in enumerate(blocks):
+        for k in range(num_blocks):
             self.blocks.add_module(
-                f"block{k}",
-                ConvBlock(
-                    k,
-                    ksize=conv_block_ksize,
-                    drop_mode=drop_mode,
-                    **block_args,
-                ),
+                f"block{k}", ConvBlock(k, D1, D2, conv_block_ksize, p_drop)
             )
 
         self.conv_final = nn.Conv1d(
@@ -324,75 +295,48 @@ class BrainEncoder(nn.Module):
             stride=final_stride,
         )
 
-        temporal_dim = conv_output_size(
-            init_temporal_dim,
-            ksize=final_ksize,
-            stride=final_stride,
-            repetition=3 if temporal_agg == "original" else 1,
-            downsample=sum(downsample),
-        )
+        # temporal_dim = conv_output_size(
+        #     init_temporal_dim,
+        #     ksize=final_ksize,
+        #     stride=final_stride,
+        #     repetition=3 if temporal_agg == "original" else 1,
+        #     downsample=sum(downsample),
+        # )
 
-        if temporal_agg is not None:
-            self.temporal_aggregation = TemporalAggregation(
-                args, temporal_dim, multiplier=num_clip_tokens
-            )
-        else:
-            self.temporal_aggregation = None
+        self.temporal_aggregation = TemporalAggregation(
+            temporal_dim, D3, temporal_agg, multiplier=num_clip_tokens
+        )
 
         self.clip_head = nn.Sequential(nn.LayerNorm([D3, num_clip_tokens]), nn.GELU(), nn.Conv1d(D3, F, 1))  # fmt: skip
         self.mse_head = nn.Sequential(nn.LayerNorm([D3, num_clip_tokens]), nn.GELU(), nn.Conv1d(D3, F, 1))  # fmt: skip
 
-    def ch_locations_2d(montage_path: str) -> torch.Tensor:
+    @staticmethod
+    def _ch_locations_2d(montage_path: str) -> torch.Tensor:
         loc = np.load(montage_path)
 
         # Min-max normalization
         loc = (loc - loc.min(axis=0)) / (loc.max(axis=0) - loc.min(axis=0))
-        
+
         # Scale down to keep a margin of 0.1 on each side
         loc = loc * 0.8 + 0.1
 
         return torch.from_numpy(loc.astype(np.float32))
 
-    def forward(
-        self, X: torch.Tensor, subject_idxs: Optional[torch.Tensor]
-    ) -> torch.Tensor:
-        assert self.unknown_subject or subject_idxs is not None, "You need to provide subject_idxs when it's not unknown subject."  # fmt: skip
-
+    def forward(self, X: torch.Tensor, subject_idxs: torch.Tensor) -> torch.Tensor:
         X = self.subject_block(
             X, subject_idxs if not self.ignore_subjects else torch.zeros_like(subject_idxs)  # fmt: skip
         )
 
-        if self.vq == "middle1":
-            X, vq_loss, perplexity = self.vector_quantizer(X)
-
         X = self.blocks(X)
-
-        if self.vq == "middle2":
-            X, vq_loss, perplexity = self.vector_quantizer(X)
 
         X = F.gelu(self.conv_final(X))
 
-        if self.vq == "end":
-            X, vq_loss, perplexity = self.vector_quantizer(X)
-
-        if self.temporal_aggregation is not None:
-            X = self.temporal_aggregation(X)
+        X = self.temporal_aggregation(X)
 
         Z_clip = self.clip_head(X)
         Z_mse = self.mse_head(X)
 
-        ret_dict = {"Z_clip": Z_clip, "Z_mse": Z_mse}
-
-        if self.vq is not None:
-            ret_dict.update({"vq_loss": vq_loss, "perplexity": perplexity})
-
-        if hasattr(self, "dann_head"):
-            subject_pred = self.dann_head(X)
-            adv_loss = F.cross_entropy(subject_pred, subject_idxs.to(X.device))
-
-            ret_dict.update({"adv_loss": adv_loss})
-
-        return ret_dict
+        return {"Z_clip": Z_clip, "Z_mse": Z_mse}
 
     def encode(
         self,

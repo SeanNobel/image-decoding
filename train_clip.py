@@ -12,6 +12,7 @@ from typing import Union, Optional
 import wandb
 import hydra
 from omegaconf import DictConfig, OmegaConf
+from functools import partial
 
 import clip
 from transformers import AutoProcessor, CLIPVisionModel
@@ -28,30 +29,10 @@ from image_decoding.utils import (
 )
 
 
-def train():
+def train(args: DictConfig, run_dir: str):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-
-    run_name = args.train_name
-
-    if sweep:
-        wandb.init(config=None)
-
-        run_name += "_" + "".join(
-            [
-                f"{k}-{v:.3f}_" if isinstance(v, float) else f"{k}-{v}_"
-                for k, v in wandb.config.items()
-            ]
-        )
-
-        wandb.run.name = run_name
-        args.__dict__.update(wandb.config)
-        cprint(wandb.config, "cyan")
-        wandb.config.update(args.__dict__)
-
-    run_dir = os.path.join("runs", args.dataset.lower(), run_name)
-    os.makedirs(run_dir, exist_ok=True)
 
     device = f"cuda:{args.cuda_id}"
 
@@ -89,8 +70,7 @@ def train():
 
     models = Models(brain_encoder, None, loss_func)
 
-    if sweep:
-        wandb.config.update({"brain_encoder_params": count_parameters(brain_encoder)})
+    wandb.config.update({"brain_encoder_params": count_parameters(brain_encoder)})
 
     # ---------------------
     #      Classifiers
@@ -220,13 +200,9 @@ def train():
                 )
 
                 if isinstance(test_classifier, DiagonalClassifier):
-                    topk_accs, _ = test_classifier(
-                        Z, Y, sequential=args.test_with_whole
-                    )
+                    topk_accs, _ = test_classifier(Z, Y, sequential=True)
                 elif isinstance(test_classifier, LabelClassifier):
-                    topk_accs = test_classifier(
-                        Z, y_idxs.to(device), sequential=args.test_with_whole
-                    )
+                    topk_accs = test_classifier(Z, y_idxs.to(device), sequential=True)
                 else:
                     raise NotImplementedError
 
@@ -244,31 +220,30 @@ def train():
             f"lr: {optimizer.param_groups[0]['lr']:.5f}",
         )
 
-        if sweep:
-            performance_now = {
-                "epoch": epoch,
-                "train_clip_loss": np.mean(train_clip_losses),
-                "train_mse_loss": np.mean(train_mse_losses),
-                "test_clip_loss": np.mean(test_clip_losses),
-                "test_mse_loss": np.mean(test_mse_losses),
-                "lrate": optimizer.param_groups[0]["lr"],
-                "temp": loss_func.temp.item(),
+        performance_now = {
+            "epoch": epoch,
+            "train_clip_loss": np.mean(train_clip_losses),
+            "train_mse_loss": np.mean(train_mse_losses),
+            "test_clip_loss": np.mean(test_clip_losses),
+            "test_mse_loss": np.mean(test_mse_losses),
+            "lrate": optimizer.param_groups[0]["lr"],
+            "temp": loss_func.temp.item(),
+        }
+
+        performance_now.update(
+            {
+                f"train_top{k}_acc": np.mean(train_topk_accs[:, i])
+                for i, k in enumerate(args.acc_topks)
             }
+        )
+        performance_now.update(
+            {
+                f"test_top{k}_acc": np.mean(test_topk_accs[:, i])
+                for i, k in enumerate(args.acc_topks)
+            }
+        )
 
-            performance_now.update(
-                {
-                    f"train_top{k}_acc": np.mean(train_topk_accs[:, i])
-                    for i, k in enumerate(args.acc_topks)
-                }
-            )
-            performance_now.update(
-                {
-                    f"test_top{k}_acc": np.mean(test_topk_accs[:, i])
-                    for i, k in enumerate(args.acc_topks)
-                }
-            )
-
-            wandb.log(performance_now)
+        wandb.log(performance_now)
 
         if scheduler is not None:
             scheduler.step()
@@ -304,25 +279,52 @@ def train():
             break
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="default")
-def run(_args: DictConfig) -> None:
-    global args, sweep
+@hydra.main(version_base=None, config_path="./", config_name="config")
+def run(args: DictConfig) -> None:
+    # global args, sweep
 
     # NOTE: Using default.yaml only for specifying the experiment settings yaml.
-    args = OmegaConf.load(os.path.join("configs", _args.config_path))
+    # args = OmegaConf.load(os.path.join("configs", _args.config_path))
 
-    sweep = _args.sweep
+    # sweep = _args.sweep
 
-    if sweep:
-        sweep_config = OmegaConf.to_container(
-            args.sweep_config, resolve=True, throw_on_missing=True
+    run_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+
+    OmegaConf.save(config=args, f=os.path.join(run_dir, "config.yaml"))
+
+    wandb.init(
+        project=args.wandb.project,
+        config=OmegaConf.to_container(args),
+        name=args.wandb.name,
+        mode=args.wandb.mode,
+        job_type="train",
+    )
+
+    if args.wandb.sweep:
+        wandb.init(config=None)
+
+        run_name += "_" + "".join(
+            [
+                f"{k}-{v:.3f}_" if isinstance(v, float) else f"{k}-{v}_"
+                for k, v in wandb.config.items()
+            ]
         )
 
-        sweep_id = wandb.sweep(sweep_config, project=args.project_name)
+        wandb.run.name = run_name
+        args.__dict__.update(wandb.config)
+        cprint(wandb.config, "cyan")
+        wandb.config.update(args.__dict__)
 
-        wandb.agent(sweep_id, train, count=args.sweep_count)
+    if args.wandb.sweep:
+        sweep_config = OmegaConf.to_container(
+            args.wandb.sweep_config, resolve=True, throw_on_missing=True
+        )
+
+        sweep_id = wandb.sweep(sweep_config)  # , project=args.project_name)
+
+        wandb.agent(sweep_id, partial(train, args=args), count=args.wandb.sweep_count)
     else:
-        train()
+        train(args, run_dir)
 
 
 if __name__ == "__main__":
