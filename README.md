@@ -4,7 +4,7 @@
 
 ## Status
 
-- :construction: Preprocess and CLIP training are implemented but unable to reproduce the top-5 accuracy reported in the paper.
+- :construction: Preprocess and CLIP training are implemented but unable to reproduce the top-5 accuracy reported in the paper. (paper: 10%, this repo: 3.1%, where chance is 0.21% for large test set)
 
   - Currently using the preprocessed data in Hebart et al., 2023, whose pipeline is slightly different from the Meta paper.
 
