@@ -15,10 +15,7 @@ class CLIPLoss(nn.Module):
 
         self.compute_similarity = nn.CosineSimilarity(dim=-1)
 
-        if args.push_negative:
-            self.cross_entropy = nn.BCELoss(reduction=args.reduction)
-        else:
-            self.cross_entropy = nn.CrossEntropyLoss(reduction=args.reduction)
+        self.cross_entropy = nn.CrossEntropyLoss(reduction=args.reduction)
 
         # Temperature (scaler)
         self.temp = nn.Parameter(torch.tensor([float(args.clip_temp_init)]))

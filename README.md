@@ -21,11 +21,11 @@
 - Run preprocessing.
 
 ```bash
-python preproc.py thingsmeg_dir={path to the THINGS-MEG dataset directory with / at the end} things_dir={path to the THINGS dataset directory with / at the end}
+python preproc.py thingsmeg_root={path to the THINGS-MEG dataset directory with / at the end} things_root={path to the THINGS dataset directory with / at the end}
 ```
 
 - Run CLIP training.
 
 ```bash
-python train_clip.py sweep={True for logging curves online at wandb}
+python train_clip.py sweep={True for logging curves online at wandb} thingsmeg_root={path to the THINGS-MEG dataset directory with / at the end} things_root={path to the THINGS dataset directory with / at the end}
 ```
